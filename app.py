@@ -17,6 +17,11 @@ UPSTREAM_URL = os.environ.get("UPSTREAM_URL", "").rstrip("/")
 EXCLUDED_REQUEST_HEADERS = {"host", "content-length"}
 EXCLUDED_RESPONSE_HEADERS = {"content-encoding", "content-length", "transfer-encoding", "connection"}
 
+# 動画アップロードは自宅回線の速度次第でかなり時間がかかるため、
+# 接続タイムアウトは短く・読み取り(応答待ち)タイムアウトは長めに分ける
+CONNECT_TIMEOUT = 10
+READ_TIMEOUT = 600  # 10分
+
 
 def proxy_request(path):
     if not UPSTREAM_URL:
@@ -31,10 +36,15 @@ def proxy_request(path):
             url=target,
             headers=headers,
             params=request.args,
-            data=request.get_data() or None,
+            # request.get_data()で全体をメモリに読み込まず、
+            # request.stream をそのまま流し込むことで、
+            # 受信しながら順次PC側へ転送する(大きい動画ファイル対策)
+            data=request.stream if request.content_length else None,
             stream=True,
-            timeout=60,
+            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
         )
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "バックエンド(PC側)からの応答がタイムアウトしました。自宅回線が遅いか、PC側が停止している可能性があります。"}), 504
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"バックエンド(PC側)に接続できませんでした: {e}"}), 502
 
@@ -44,7 +54,7 @@ def proxy_request(path):
     ]
 
     return Response(
-        upstream_resp.iter_content(chunk_size=8192),
+        upstream_resp.iter_content(chunk_size=65536),
         status=upstream_resp.status_code,
         headers=response_headers,
     )
